@@ -1,0 +1,12 @@
+python-dotenv>=1.0.0
+requests>=2.31.0
+mcp>=1.0.0
+uvicorn>=0.32.1
+anthropic>=0.18.0
+pydantic_ai==0.0.27
+pyautogui>=0.9.54
+pillow>=10.0.0
+
+# CLI dependencies
+rich>=13.3.5
+# readline is not used as it's problematic on some platforms
