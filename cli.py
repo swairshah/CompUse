@@ -189,5 +189,8 @@ async def run_cli():
         
         cli.console.print("[info]Goodbye![/info]")
 
-if __name__ == "__main__":
+def main():
     asyncio.run(run_cli())
+
+if __name__ == "__main__":
+    main()
