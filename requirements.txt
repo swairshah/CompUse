@@ -8,8 +8,5 @@ pyautogui>=0.9.54
 pillow>=10.0.0
 pytest
 pytest-asyncio
-
-
-# CLI dependencies
 rich>=13.3.5
-# readline is not used as it's problematic on some platforms
+prompt_toolkit

@@ -2,33 +2,16 @@ import os
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Any
-
-from dotenv import load_dotenv
+from typing import Dict, List, Optional, Any, Tuple
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from pydantic_ai import Agent, RunContext, Tool
-from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai import RunContext, Tool
 from pydantic_ai.tools import ToolDefinition
 
-import sys
-# sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from gui_tools import (
-    screenshot, 
-    mouse_move, 
-    mouse_click, 
-    keyboard_type, 
-    key_press, 
-    get_screen_size,
-    get_mouse_position,
-    switch_window,
-    focus_application,
-    GuiToolDeps
-)
+from gui_tools import GuiToolDeps
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -84,11 +67,11 @@ async def create_mcp_tool_preparor(tool_name: str, tool_description: str, tool_s
     return prepare
 
 
-async def initialize_puppeteer_server():
+async def initialize_puppeteer_server() -> Tuple[ClientSession, Any]:
     """Initialize the Puppeteer MCP server."""
     server_params = StdioServerParameters(
         command="npx",
-        args=["-y", "@modelcontextprotocol/server-puppeteer"],
+        args=["@modelcontextprotocol/server-puppeteer"],
         env=os.environ,
     )
 
@@ -101,7 +84,7 @@ async def initialize_puppeteer_server():
     return session, stdio_ctx
 
 
-async def load_mcp_tools(session: ClientSession) -> List[Tool]:
+async def load_mcp_tools(session: ClientSession) -> Tuple[List[Tool], Dict]:
     """Load tools from the MCP server."""
     tools_response = await session.list_tools()
     pydantic_tools = []
@@ -119,117 +102,3 @@ async def load_mcp_tools(session: ClientSession) -> List[Tool]:
     
     logging.info(f"Loaded {len(pydantic_tools)} MCP tools")
     return pydantic_tools, tool_dict
-
-
-async def main():
-    """Main function to set up a server with both GUI and MCP tools."""
-    load_dotenv()
-    
-    try:
-        print("Initializing Puppeteer MCP server...")
-        session, stdio_ctx = await initialize_puppeteer_server()
-        
-        print("Loading MCP tools...")
-        mcp_tools, tool_dict = await load_mcp_tools(session)
-        
-        # List MCP tool names
-        print("MCP Tools:")
-        for tool_name in tool_dict.keys():
-            print(f"- {tool_name}")
-        
-        # Create screenshots directory
-        os.makedirs(os.path.join(os.getcwd(), "screenshots"), exist_ok=True)
-        
-        # Create model
-        model = OpenAIModel('gpt-4o')
-        
-        # Create tools list
-        all_tools = [
-            # GUI tools
-            screenshot,
-            mouse_move,
-            mouse_click,
-            keyboard_type,
-            key_press,
-            get_screen_size,
-            get_mouse_position,
-            switch_window,
-            focus_application,
-            # MCP tools are added from the list
-            *mcp_tools
-        ]
-        
-        # Create agent with all tools
-        combined_agent = Agent(
-            model,
-            system_prompt=(
-                'You are a powerful computer control assistant that can control both the desktop and web browsers. '
-                'You can interact with the computer using GUI tools and web browsers using Puppeteer tools.'
-                '\n\n'
-                'You have two types of tools available:'
-                '\n1. PyAutoGUI tools (screenshot, mouse_move, mouse_click, etc.) for desktop control'
-                '\n2. Puppeteer tools (browser*, navigate, etc.) for web browser automation'
-                '\n\n'
-                'When a user asks for help, decide which tools are appropriate for the task. '
-                'For web browser tasks, use the Puppeteer MCP tools. For desktop application tasks, '
-                'use the PyAutoGUI tools. If you need to see what\'s on screen, use the screenshot tool first.'
-                '\n\n'
-                'IMPORTANT SAFETY RULES:'
-                '\n- Never try to access sensitive information'
-                '\n- Do not try to install software without explicit permission'
-                '\n- Always confirm before clicking on buttons that might change system settings'
-                '\n- If you\'re uncertain about an action, ask for clarification first'
-            ),
-            deps_type=CombinedDeps,
-            retries=1,
-            tools=all_tools
-        )
-        
-        # Fix MCP tool schemas
-        for tool_name, tool_info in tool_dict.items():
-            combined_agent._function_tools[tool_name]._parameters_json_schema = tool_info['schema']
-            combined_agent._function_tools[tool_name].description = tool_info['description']
-        
-        # Initialize dependencies with MCP session
-        deps = CombinedDeps(mcp_session=session)
-        
-        print("\nCombined Agent initialized with both PyAutoGUI and MCP tools!")
-        print("You can now give commands to control your computer and browser.")
-        print("Type 'exit' to quit.")
-        
-        # Interactive loop
-        while True:
-            try:
-                user_input = input("\nWhat would you like to do? > ")
-                
-                if user_input.lower() in ['exit', 'quit', 'bye']:
-                    print("Goodbye!")
-                    break
-                    
-                print("Processing your request...")
-                start_time = asyncio.get_event_loop().time()
-                
-                # Run the agent with the user's input directly
-                result = await combined_agent.run(user_input, deps=deps)
-                
-                elapsed = asyncio.get_event_loop().time() - start_time
-                print(f"Response ({elapsed:.2f}s):")
-                print(result.data)
-                
-            except KeyboardInterrupt:
-                print("\nGoodbye!")
-                break
-            except Exception as e:
-                print(f"Error: {str(e)}")
-    
-    finally:
-        # Clean up MCP server
-        if 'session' in locals():
-            await session.__aexit__(None, None, None)
-        if 'stdio_ctx' in locals():
-            await stdio_ctx.__aexit__(None, None, None)
-        print("MCP server cleaned up")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
