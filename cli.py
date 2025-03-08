@@ -131,6 +131,10 @@ async def run_cli():
                 
                 if user_input.lower() in ['/exit', '/quit', '/bye', 'exit', 'quit', 'bye']:
                     cli.console.print("[info]Shutting down...[/info]")
+                    # Add proper cleanup before breaking
+                    if agent_manager:
+                        await agent_manager.cleanup()
+                        cli.console.print("[success]Resources cleaned up successfully[/success]")
                     break
                 
                 elif user_input.lower() == '/help':
@@ -175,13 +179,7 @@ async def run_cli():
                 cli.console.print(f"[error]Error: {str(e)}[/error]")
     
     finally:
-        # Clean up agent manager
-        if agent_manager:
-            with cli.console.status("[dark_orange3] Exiting...", spinner="dots"):
-                await agent_manager.cleanup()
-                cli.console.print("[success]Resources cleaned up successfully[/success]")
-        
-        # Save history
+        # Save history only
         try:
             readline.write_history_file(cli.history_file)
         except (PermissionError, OSError, Exception):

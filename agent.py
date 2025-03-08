@@ -86,9 +86,29 @@ async def initialize_puppeteer_server() -> Tuple[ClientSession, Any]:
     return session, stdio_ctx
 
 
+async def initialize_apple_server() -> Tuple[ClientSession, Any]:
+    """Initialize the Apple MCP server."""
+    server_params = StdioServerParameters(
+        command="npx",
+        # args=["@dhravya/apple-mcp@latest"],
+        # args=["@kimtaeyoon83/mcp-server-youtube-transcript"],
+        args=["@modelcontextprotocol/server-filesystem", "/Users/swairshah/Desktop/papers"],
+        env=os.environ,
+    )
+
+    stdio_ctx = stdio_client(server_params)
+    read, write = await stdio_ctx.__aenter__()
+    session = ClientSession(read, write)
+    await session.__aenter__()
+    await session.initialize()
+    
+    return session, stdio_ctx
+
+
 async def load_mcp_tools(session: ClientSession) -> Tuple[List[Tool], Dict]:
     """Load tools from the MCP server."""
     tools_response = await session.list_tools()
+    print(tools_response)
     pydantic_tools = []
     tool_dict = {}
     

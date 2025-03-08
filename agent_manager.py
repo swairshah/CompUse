@@ -20,7 +20,12 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from agent import initialize_puppeteer_server, load_mcp_tools, CombinedDeps
+from agent import (
+    initialize_puppeteer_server, 
+    load_mcp_tools, 
+    CombinedDeps, 
+    initialize_apple_server
+)
 
 from gui_tools import (
     screenshot, 
@@ -35,6 +40,12 @@ from gui_tools import (
 )
 
 @dataclass
+class CombinedDeps:
+    """Dependencies for the agent, including MCP sessions."""
+    mcp_session: Any = None
+    apple_mcp_session: Any = None
+
+@dataclass
 class AgentManager:
     """Manages the agent, its tools, and conversation history."""
     agent: Agent
@@ -44,6 +55,8 @@ class AgentManager:
     mcp_tools: List[str]
     _session: Optional[Any] = None  # Store MCP session
     _stdio_ctx: Optional[Any] = None  # Store stdio context
+    _apple_session: Optional[Any] = None  # Store Apple MCP session
+    _apple_stdio_ctx: Optional[Any] = None  # Store Apple stdio context
 
     @classmethod
     async def initialize(cls) -> AgentManager:
@@ -52,7 +65,15 @@ class AgentManager:
         session, stdio_ctx = await initialize_puppeteer_server()
         
         # Load MCP tools
-        mcp_tools, tool_dict = await load_mcp_tools(session)
+        puppeteer_tools, puppeteer_tool_dict = await load_mcp_tools(session)
+        
+        # Initialize Apple server
+        apple_session, apple_stdio_ctx = await initialize_apple_server()
+        
+        # Load Apple MCP tools
+        apple_tools, apple_tool_dict = await load_mcp_tools(apple_session)
+        mcp_tools = [*puppeteer_tools, *apple_tools]
+        tool_dict = {**puppeteer_tool_dict, **apple_tool_dict}
         
         # Create model
         model = OpenAIModel('gpt-4o')
@@ -74,11 +95,15 @@ class AgentManager:
         
         # Fix MCP tool schemas
         for tool_name, tool_info in tool_dict.items():
+            print(tool_name)
             agent._function_tools[tool_name]._parameters_json_schema = tool_info['schema']
             agent._function_tools[tool_name].description = tool_info['description']
         
-        # Initialize dependencies
-        deps = CombinedDeps(mcp_session=session)
+        # Initialize dependencies with both sessions
+        deps = CombinedDeps(
+            mcp_session=session,
+            apple_mcp_session=apple_session
+        )
         
         # Get tool names for display
         gui_tool_names = ["screenshot", "mouse_move", "mouse_click", "keyboard_type", "key_press", 
@@ -95,22 +120,40 @@ class AgentManager:
             gui_tools=gui_tool_names,
             mcp_tools=mcp_tool_names,
             _session=session,
-            _stdio_ctx=stdio_ctx
+            _stdio_ctx=stdio_ctx,
+            _apple_session=apple_session,
+            _apple_stdio_ctx=apple_stdio_ctx
         )
     
     async def cleanup(self):
-        """Clean up MCP server and stdio context."""
+        """Clean up MCP servers and stdio contexts."""
+        # Clean up main MCP session
         if self._session:
             try:
                 await asyncio.wait_for(self._session.__aexit__(None, None, None), timeout=5.0)
             except (asyncio.TimeoutError, Exception) as e:
                 logging.warning(f"Session cleanup warning: {str(e)}")
         
+        # Clean up main stdio context
         if self._stdio_ctx:
             try:
                 await asyncio.wait_for(self._stdio_ctx.__aexit__(None, None, None), timeout=5.0)
             except (asyncio.TimeoutError, Exception) as e:
                 logging.warning(f"STDIO cleanup warning: {str(e)}")
+        
+        # Clean up Apple MCP session
+        if self._apple_session:
+            try:
+                await asyncio.wait_for(self._apple_session.__aexit__(None, None, None), timeout=5.0)
+            except (asyncio.TimeoutError, Exception) as e:
+                logging.warning(f"Apple session cleanup warning: {str(e)}")
+        
+        # Clean up Apple stdio context
+        if self._apple_stdio_ctx:
+            try:
+                await asyncio.wait_for(self._apple_stdio_ctx.__aexit__(None, None, None), timeout=5.0)
+            except (asyncio.TimeoutError, Exception) as e:
+                logging.warning(f"Apple STDIO cleanup warning: {str(e)}")
     
     async def run_command(self, command: str) -> tuple[str, float]:
         """Run a command through the agent and return the result and elapsed time."""
