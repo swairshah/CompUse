@@ -12,10 +12,12 @@ from pydantic_ai.tools import ToolDefinition
 
 from gui_tools import GuiToolDeps
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+def configure_logging(verbose: bool = False):
+    """Configure logging level based on verbosity."""
+    logging.basicConfig(
+        level=logging.INFO if verbose else logging.WARNING,
+        format='%(asctime)s - %(levelname)s - %(message)s'
+    )
 
 
 @dataclass
