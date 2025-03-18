@@ -10,3 +10,4 @@ pytest
 pytest-asyncio
 rich>=13.3.5
 prompt_toolkit
+pyobjc-framework-Cocoa>=8.5; platform_system == "Darwin"
