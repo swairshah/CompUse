@@ -11,7 +11,7 @@ nice GUI tools for the agent to use. and pull puppetter MCP server to use its to
 
 - Desktop GUI automation with PyAutoGUI
 - Web browser automation with Puppeteer MCP
-- Voice (TODO) /text-based computer control
+- Voice and text-based computer control
 - Screenshot-based interaction (may be need to figure out things like bounding box etc to localize buttons windows)
 - Cross-platform support (macOS, Windows, Linux) -- haven't tested on windows..
 
@@ -43,8 +43,29 @@ npm install -g @modelcontextprotocol/server-puppeteer
    python agent.py
    ```
 
+3. Start the voice-enabled agent (desktop + browser + voice commands):
+   ```bash
+   python voice_cli.py
+   ```
+
+## Voice Command Options
+
+The voice command interface supports several options:
+
+- `--no-voice`: Disable voice commands (use text input only)
+- `--push-to-talk`: Use push-to-talk mode (Ctrl+Space) instead of continuous listening
+- `--no-wake-word`: Disable wake word detection (listen for all speech)
+- `--wake-word WORD`: Set a custom wake word (default: "computer")
+- `-v, --verbose`: Enable verbose logging
+
+Example:
+```bash
+python voice_cli.py --wake-word "assistant" --verbose
+```
+
 ## Requirements
 
 - Python 3.7+
 - Node.js 16+
 - OpenAI API key (set in .env file)
+- For voice commands: microphone and speakers
