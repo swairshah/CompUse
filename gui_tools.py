@@ -10,10 +10,22 @@ import pyautogui
 from PIL import Image
 from pydantic_ai import Agent, RunContext, ImageUrl
 
-# Make PyAutoGUI safe - adds 0.1s pause between actions
+import platform
+import logging
+
+# Make PyAutoGUI safe 
 pyautogui.PAUSE = 0.1
 # Fail-safe: move mouse to upper left to abort
 pyautogui.FAILSAFE = True
+
+# Set up logging
+logger = logging.getLogger(__name__)
+
+if platform.system() == 'Darwin':
+    try:
+        from AppKit import NSWorkspace, NSApplicationActivateIgnoringOtherApps
+    except ImportError:
+        logger.warning("AppKit not available. macOS app functions will not work.")
 
 
 @dataclass
@@ -295,7 +307,6 @@ async def switch_window(ctx: RunContext[GuiToolDeps]) -> Dict[str, Any]:
         ctx: The context.
     """
     try:
-        # Detect platform
         import platform
         system = platform.system()
 
@@ -323,11 +334,10 @@ async def focus_application(ctx: RunContext[GuiToolDeps], app_name: str) -> Dict
         app_name: Name of the application to focus (e.g., "Chrome", "Terminal", "Finder")
     """
     try:
-        # Detect platform
         import platform
         system = platform.system()
 
-        if system == 'Darwin':  # macOS
+        if system == 'Darwin':  
             import subprocess
 
             # AppleScript to focus application
@@ -390,6 +400,94 @@ async def focus_application(ctx: RunContext[GuiToolDeps], app_name: str) -> Dict
         return {"error": str(e)}
 
 
+@gui_agent.tool
+async def get_frontmost_app(ctx: RunContext[GuiToolDeps]) -> Dict[str, Any]:
+    """Get the currently frontmost application (macOS only).
+    
+    Args:
+        ctx: The context.
+        
+    Returns:
+        Information about the frontmost app including name and bundle ID.
+    """
+    try:
+        if platform.system() != 'Darwin':
+            return {"error": "This function is only available on macOS"}
+            
+        ws = NSWorkspace.sharedWorkspace()
+        frontmost_app = ws.frontmostApplication()
+        if frontmost_app:
+            return {
+                "success": True,
+                "name": frontmost_app.localizedName(),
+                "bundle_id": frontmost_app.bundleIdentifier()
+            }
+        return {"success": False, "error": "No frontmost application found"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@gui_agent.tool
+async def activate_app_by_name(ctx: RunContext[GuiToolDeps], app_name: str) -> Dict[str, Any]:
+    """Activate (bring to foreground) an application by name (macOS only).
+
+    Args:
+        ctx: The context.
+        app_name: Name of the application to activate.
+    """
+    try:
+        if platform.system() != 'Darwin':
+            return {"error": "This function is only available on macOS"}
+            
+        apps = NSWorkspace.sharedWorkspace().runningApplications()
+
+        # Try exact match first
+        for app in apps:
+            if app.localizedName() == app_name:
+                logger.debug(f"Focusing {app_name} application")
+                app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+                return {"success": True, "name": app_name, "match_type": "exact"}
+
+        # If exact match fails, try case-insensitive match or contains
+        for app in apps:
+            if app_name.lower() in app.localizedName().lower():
+                app_name_found = app.localizedName()
+                logger.debug(
+                    f"Focusing app with name containing '{app_name}': {app_name_found}"
+                )
+                app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+                return {"success": True, "name": app_name_found, "match_type": "partial"}
+
+        return {"success": False, "error": f"No application named '{app_name}' found"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@gui_agent.tool
+async def activate_app_by_bundle_id(ctx: RunContext[GuiToolDeps], bundle_id: str) -> Dict[str, Any]:
+    """Activate (bring to foreground) an application by bundle ID (macOS only).
+
+    Args:
+        ctx: The context.
+        bundle_id: Bundle ID of the application to activate.
+    """
+    try:
+        if platform.system() != 'Darwin':
+            return {"error": "This function is only available on macOS"}
+            
+        apps = NSWorkspace.sharedWorkspace().runningApplications()
+
+        for app in apps:
+            if app.bundleIdentifier() == bundle_id:
+                logger.debug(f"Focusing application with bundle ID {bundle_id}")
+                app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+                return {"success": True, "bundle_id": bundle_id}
+
+        return {"success": False, "error": f"No application with bundle ID '{bundle_id}' found"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 async def main():
     """Example usage of GUI tools."""
     deps = GuiToolDeps()
@@ -397,6 +495,11 @@ async def main():
     # Example: Take a screenshot, then click somewhere
     result = await gui_agent.run(
         "Take a screenshot, then click in the middle of the screen",
+        deps=deps
+    )
+    print("Response:", result.data)
+    result = await gui_agent.run(
+        "Focus on the Firefox browser and then go to Cursor app",
         deps=deps
     )
     print("Response:", result.data)
