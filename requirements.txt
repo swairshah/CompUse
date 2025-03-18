@@ -11,3 +11,7 @@ pytest-asyncio
 rich>=13.3.5
 prompt_toolkit
 pyobjc-framework-Cocoa>=8.5; platform_system == "Darwin"
+# Voice command dependencies
+SpeechRecognition>=3.10.0
+pyttsx3>=2.90
+keyboard>=0.13.5
