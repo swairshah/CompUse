@@ -16,7 +16,7 @@ from pydantic_ai import RunContext, Tool
 from pydantic_ai.tools import ToolDefinition
 
 # Pipecat imports
-from pipecat.frames.frames import AudioFrame, EndFrame, TextFrame
+from pipecat.frames.frames import AudioRawFrame, EndFrame, TextFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineTask
 from pipecat.pipeline.runner import PipelineRunner
