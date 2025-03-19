@@ -11,3 +11,8 @@ pytest-asyncio
 rich>=13.3.5
 prompt_toolkit
 pyobjc-framework-Cocoa>=8.5; platform_system == "Darwin"
+# Voice command dependencies
+pipecat-ai>=0.1.0
+pipecat-ai[whisper]
+pipecat-ai[silero]
+aiohttp>=3.8.5
