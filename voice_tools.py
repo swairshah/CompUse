@@ -36,6 +36,7 @@ class VoiceToolDeps:
     transport: Optional[LocalTransport] = None
     voice_task: Optional[PipelineTask] = None
     command_callback: Optional[Callable[[str], None]] = None
+    voice_manager: Optional['VoiceCommandManager'] = None  # Add reference to VoiceCommandManager
 
 class VoiceCommandManager:
     """Manages voice command recognition and processing."""
@@ -62,8 +63,10 @@ class VoiceCommandManager:
         self.wake_word = wake_word
         self.feedback_enabled = feedback_enabled
         self.deps = VoiceToolDeps()
+        self.deps.voice_manager = self  # Set self reference in deps
         self.is_listening = False
         self.is_initialized = False
+        self.command_history = []  # Store command history
         
     async def initialize(self, command_callback: Callable[[str], None]):
         """
@@ -74,6 +77,10 @@ class VoiceCommandManager:
         """
         if self.is_initialized:
             return
+            
+        # Validate required API keys
+        if not self.whisper_api_key:
+            raise ValueError("OpenAI API key is required for speech recognition. Set OPENAI_API_KEY environment variable or pass whisper_api_key parameter.")
             
         # Create aiohttp session
         self.deps.aiohttp_session = aiohttp.ClientSession()
@@ -145,6 +152,12 @@ class VoiceCommandManager:
             
         logger.info(f"Processing command: {command}")
         
+        # Add to command history
+        self.command_history.append({
+            "timestamp": asyncio.get_event_loop().time(),
+            "command": command
+        })
+        
         # Call the command callback with the recognized command
         if self.deps.command_callback:
             self.deps.command_callback(command)
@@ -206,6 +219,10 @@ class VoiceCommandManager:
             
         self.is_initialized = False
         logger.info("Voice command system cleaned up")
+    
+    def get_command_history(self) -> List[Dict[str, Any]]:
+        """Get the command history."""
+        return self.command_history
 
 # Tool for starting voice recognition
 async def voice_recognition_start(ctx: RunContext[VoiceToolDeps]) -> Dict[str, Any]:
@@ -249,6 +266,28 @@ async def voice_recognition_stop(ctx: RunContext[VoiceToolDeps]) -> Dict[str, An
         logger.error(f"Error stopping voice recognition: {str(e)}")
         return {"error": str(e)}
 
+# Tool for getting command history
+async def voice_get_history(ctx: RunContext[VoiceToolDeps]) -> Dict[str, Any]:
+    """Get the voice command history.
+    
+    Args:
+        ctx: The context with voice tool dependencies.
+    """
+    try:
+        voice_manager = ctx.deps.voice_manager
+        if not voice_manager:
+            return {"error": "Voice command manager not initialized"}
+            
+        history = voice_manager.get_command_history()
+        return {
+            "success": True,
+            "history": history
+        }
+    except Exception as e:
+        logger.error(f"Error getting command history: {str(e)}")
+        return {"error": str(e)}
+
 # Create tool definitions
 voice_start_tool = Tool(voice_recognition_start)
 voice_stop_tool = Tool(voice_recognition_stop)
+voice_history_tool = Tool(voice_get_history)

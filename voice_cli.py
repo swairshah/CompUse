@@ -10,6 +10,7 @@ import asyncio
 import argparse
 import logging
 from typing import Optional
+from datetime import datetime
 
 from rich.console import Console
 from rich.panel import Panel
@@ -127,6 +128,30 @@ class VoiceCLI:
         except Exception as e:
             self.console.print(f"[error]Error stopping voice recognition: {str(e)}[/error]")
     
+    async def show_command_history(self):
+        """Display the voice command history."""
+        if not self.voice_manager:
+            self.console.print("[error]Voice manager not initialized[/error]")
+            return
+            
+        history = self.voice_manager.get_command_history()
+        
+        if not history:
+            self.console.print("[info]No voice commands have been recorded yet[/info]")
+            return
+            
+        history_table = Table(title="Voice Command History")
+        history_table.add_column("Time", style="info")
+        history_table.add_column("Command", style="voice")
+        
+        for entry in history:
+            timestamp = entry.get("timestamp", 0)
+            time_str = datetime.fromtimestamp(timestamp).strftime("%H:%M:%S")
+            command = entry.get("command", "")
+            history_table.add_row(time_str, command)
+            
+        self.console.print(history_table)
+    
     async def cleanup(self):
         """Clean up resources."""
         try:
@@ -160,6 +185,11 @@ async def run_voice_cli():
         action="store_true",
         help="Automatically start voice recognition on startup"
     )
+    parser.add_argument(
+        "--push-to-talk",
+        action="store_true",
+        help="Use push-to-talk mode instead of wake word (press Ctrl+Space to talk)"
+    )
     args = parser.parse_args()
     
     # Set wake word in environment
@@ -185,15 +215,26 @@ async def run_voice_cli():
         cli.console.print(cli.agent_manager.get_tools_table())
         
         # Display voice command instructions
-        cli.console.print(
-            Panel.fit(
-                f"[voice]Voice Command Instructions[/voice]\n"
-                f"[info]Wake word: [bold]{args.wake_word}[/bold][/info]\n"
-                f"[info]Example: '[bold]{args.wake_word} take a screenshot[/bold]'[/info]\n"
-                f"[info]Example: '[bold]{args.wake_word} click at 500 300[/bold]'[/info]",
-                border_style="voice"
+        if args.push_to_talk:
+            cli.console.print(
+                Panel.fit(
+                    f"[voice]Voice Command Instructions (Push-to-Talk Mode)[/voice]\n"
+                    f"[info]Press [bold]Ctrl+Space[/bold] to start recording, release to process command[/info]\n"
+                    f"[info]Example command: [bold]take a screenshot[/bold][/info]\n"
+                    f"[info]Example command: [bold]click at 500 300[/bold][/info]",
+                    border_style="voice"
+                )
             )
-        )
+        else:
+            cli.console.print(
+                Panel.fit(
+                    f"[voice]Voice Command Instructions[/voice]\n"
+                    f"[info]Wake word: [bold]{args.wake_word}[/bold][/info]\n"
+                    f"[info]Example: '[bold]{args.wake_word} take a screenshot[/bold]'[/info]\n"
+                    f"[info]Example: '[bold]{args.wake_word} click at 500 300[/bold]'[/info]",
+                    border_style="voice"
+                )
+            )
         
         # Auto-start voice recognition if requested
         if args.auto_start:
@@ -215,6 +256,8 @@ async def run_voice_cli():
                 elif command == "status":
                     status = "active" if cli.is_listening else "inactive"
                     cli.console.print(f"[info]Voice recognition is [bold]{status}[/bold][/info]")
+                elif command == "history":
+                    await cli.show_command_history()
                 elif command == "help":
                     cli.console.print(
                         Panel.fit(
@@ -222,6 +265,7 @@ async def run_voice_cli():
                             "[info]start - Start voice recognition[/info]\n"
                             "[info]stop - Stop voice recognition[/info]\n"
                             "[info]status - Check voice recognition status[/info]\n"
+                            "[info]history - Show voice command history[/info]\n"
                             "[info]help - Show this help message[/info]\n"
                             "[info]exit - Exit the application[/info]",
                             border_style="voice"

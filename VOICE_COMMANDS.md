@@ -39,6 +39,7 @@ python voice_cli.py
 Optional arguments:
 - `--wake-word TEXT`: Set a custom wake word (default: "computer")
 - `--auto-start`: Automatically start voice recognition on startup
+- `--push-to-talk`: Use push-to-talk mode instead of wake word (press Ctrl+Space to talk)
 
 ### Available Commands
 
@@ -47,6 +48,7 @@ Once the CLI is running, you can use these text commands:
 - `start`: Start voice recognition
 - `stop`: Stop voice recognition
 - `status`: Check if voice recognition is active
+- `history`: Show voice command history
 - `help`: Show available commands
 - `exit`: Exit the application
 
@@ -62,6 +64,19 @@ When voice recognition is active:
 2. To stop listening:
    - "Computer, stop listening"
 
+### Push-to-Talk Mode
+
+If you prefer not to use a wake word, you can use push-to-talk mode:
+
+```bash
+python voice_cli.py --push-to-talk
+```
+
+In this mode:
+1. Press and hold Ctrl+Space to start recording
+2. Speak your command
+3. Release Ctrl+Space to process the command
+
 ## Integration with CompUse
 
 The voice command interface integrates with CompUse's existing tools:
@@ -71,6 +86,18 @@ The voice command interface integrates with CompUse's existing tools:
 - **System Tools**: Interact with applications and system functions
 
 All tools available in the CompUse CLI are accessible through voice commands.
+
+## Command History
+
+The voice interface keeps track of all commands you've issued. To view your command history:
+
+1. Type `history` in the CLI
+2. The system will display a table with timestamps and commands
+
+This is useful for:
+- Reviewing what commands you've already tried
+- Debugging recognition issues
+- Keeping track of your workflow
 
 ## Customization
 
@@ -104,6 +131,7 @@ If voice recognition accuracy is poor:
 2. Reduce background noise
 3. Use a better quality microphone
 4. Consider using a different wake word that's more distinct
+5. Try push-to-talk mode instead of wake word detection
 
 ### API Key Issues
 
