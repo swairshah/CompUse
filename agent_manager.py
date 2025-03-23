@@ -102,14 +102,38 @@ class AgentManager:
         """Clean up MCP server and stdio context."""
         if self._session:
             try:
-                await asyncio.wait_for(self._session.__aexit__(None, None, None), timeout=5.0)
-            except (asyncio.TimeoutError, Exception) as e:
+                # Instead of using __aexit__ directly, let's use a more graceful approach
+                # Try to close the session's context resources
+                logging.info("Cleaning up MCP session...")
+                
+                # Close any browser/page resources first
+                try:
+                    if hasattr(self._session, '_browser') and self._session._browser:
+                        await self._session._browser.close()
+                except Exception as e:
+                    logging.warning(f"Browser close warning: {str(e)}")
+                
+                # Then try to close the socket/connection
+                try:
+                    if hasattr(self._session, 'close'):
+                        await self._session.close()
+                    elif hasattr(self._session, '_conn') and hasattr(self._session._conn, 'close'):
+                        await self._session._conn.close()
+                except Exception as e:
+                    logging.warning(f"Connection close warning: {str(e)}")
+                
+            except Exception as e:
                 logging.warning(f"Session cleanup warning: {str(e)}")
         
         if self._stdio_ctx:
             try:
-                await asyncio.wait_for(self._stdio_ctx.__aexit__(None, None, None), timeout=5.0)
-            except (asyncio.TimeoutError, Exception) as e:
+                # For stdio context, use a safer approach as well
+                logging.info("Cleaning up stdio context...")
+                
+                if hasattr(self._stdio_ctx, 'close'):
+                    await self._stdio_ctx.close()
+                
+            except Exception as e:
                 logging.warning(f"STDIO cleanup warning: {str(e)}")
     
     async def run_command(self, command: str) -> tuple[str, float]:
