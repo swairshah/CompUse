@@ -48,13 +48,123 @@ custom_theme = Theme({
 
 console = Console(theme=custom_theme)
 
+async def get_voice_input(console):
+    """Get user input via voice with dynamic speech detection"""
+    import pyaudio
+    import numpy as np
+    import tempfile
+    import wave
+    import webrtcvad
+    from openai import OpenAI
+    
+    try:
+        temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        temp_filename = temp_file.name
+        temp_file.close()
+        
+        CHUNK = 480  # VAD requires specific frame sizes (10, 20, or 30ms)
+        FORMAT = pyaudio.paInt16
+        CHANNELS = 1
+        RATE = 16000  # 16kHz for VAD compatibility
+        MAX_SECONDS = 10  # Maximum recording time
+        
+        vad = webrtcvad.Vad(3)  # Aggressiveness level 3 (highest)
+        SILENCE_THRESHOLD = 30  # Number of silent frames to stop recording (30 frames ≈ 1.5 seconds)
+        silent_frames = 0
+        recording_started = False
+        
+        p = pyaudio.PyAudio()
+        
+        with console.status("[dark_orange3]", spinner="toggle7") as status:
+            stream = p.open(
+                format=FORMAT,
+                channels=CHANNELS,
+                rate=RATE,
+                input=True,
+                frames_per_buffer=CHUNK
+            )
+            
+            frames = []
+            for i in range(0, int(RATE / CHUNK * MAX_SECONDS)):  # Maximum 10 seconds
+                data = stream.read(CHUNK, exception_on_overflow=False)
+                frames.append(data)
+                
+                try:
+                    is_speech = vad.is_speech(data, RATE)
+                    
+                    if is_speech and not recording_started:
+                        recording_started = True
+                        silent_frames = 0
+                    
+                    # Count silent frames after speech has started
+                    if recording_started:
+                        if is_speech:
+                            silent_frames = 0
+                        else:
+                            silent_frames += 1
+                            
+                        # Stop if enough silence after speech
+                        if silent_frames >= SILENCE_THRESHOLD:
+                            # console.print("[info]Speech complete (detected silence)[/info]")
+                            break
+                        
+                except Exception:
+                    # VAD failed, just continue
+                    pass
+            
+            # Stop and close the stream
+            stream.stop_stream()
+            stream.close()
+            p.terminate()
+            
+            # Only process if we detected any speech
+            if recording_started:
+                # Write to WAV file
+                with wave.open(temp_filename, 'wb') as wf:
+                    wf.setnchannels(CHANNELS)
+                    wf.setsampwidth(p.get_sample_size(FORMAT))
+                    wf.setframerate(RATE)
+                    wf.writeframes(b''.join(frames))
+                
+                # Transcribe with OpenAI
+                client = OpenAI()
+                with open(temp_filename, "rb") as audio_file:
+                    transcription = client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=audio_file,
+                        response_format="text"
+                    )
+                
+                # Clean up temp file
+                try:
+                    os.unlink(temp_filename)
+                except:
+                    pass
+                
+                # Return transcription
+                if transcription:
+                    return transcription
+                else:
+                    console.print("[warning]No transcription available[/warning]")
+                    return ""
+            else:
+                console.print("[warning]No speech detected[/warning]")
+                return ""
+    
+    except Exception as e:
+        console.print(f"[error]Voice input error: {str(e)}[/error]")
+        import traceback
+        traceback.print_exc()
+        return ""
+
 class CLI:
     """Handles CLI interaction and display."""
     
     def __init__(self):
         self.console = Console(theme=custom_theme)
         self.history_file = os.path.join(os.getcwd(), ".compuse_history")
-        self.commands = ["/help", "/tools", "/history", "/clear", "/reset", "/exit", "/quit", "/bye"]
+        self.commands = ["/help", "/tools", "/history", "/clear", "/reset", "/exit", "/quit", "/bye", "/voice"]
+        self.voice_mode = False
         
     def setup_history(self):
         """Setup command history and autocompletion."""
@@ -86,6 +196,7 @@ class CLI:
         help_table.add_row("/history", "Show conversation history")
         help_table.add_row("/clear", "Clear the screen")
         help_table.add_row("/reset", "Reset the conversation history")
+        help_table.add_row("/voice", f"Toggle voice input mode (currently {'on' if self.voice_mode else 'off'})")
         help_table.add_row("/exit, /quit, /bye", "Exit the application")
         
         self.console.print(help_table)
@@ -127,7 +238,20 @@ async def run_cli():
                 
                 print()
                 prompt = "\033[1;32m > \033[0m"
-                user_input = input(prompt)
+                
+                # Handle input based on mode
+                if cli.voice_mode:
+                    # Get voice input
+                    user_input = await get_voice_input(cli.console)
+                    if user_input:
+                        print(f"{prompt}{user_input}")
+                        # Add to readline history
+                        readline.add_history(user_input)
+                    else:
+                        cli.console.print("[warning]No speech detected or transcription failed[/warning]")
+                        continue
+                else:
+                    user_input = input(prompt)
                 
                 if user_input.lower() in ['/exit', '/quit', '/bye', 'exit', 'quit', 'bye']:
                     cli.console.print("[info]Shutting down...[/info]")
@@ -152,6 +276,12 @@ async def run_cli():
                 
                 elif user_input.lower() == '/history':
                     cli.console.print(agent_manager.get_history_table())
+                    continue
+                    
+                elif user_input.lower() == '/voice':
+                    cli.voice_mode = not cli.voice_mode
+                    mode_status = "enabled" if cli.voice_mode else "disabled"
+                    cli.console.print(f"[success]Voice input mode {mode_status}[/success]")
                     continue
                 
                 elif user_input.startswith('/'):
