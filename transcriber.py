@@ -6,7 +6,7 @@ import numpy as np
 import pyaudio
 import webrtcvad
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, Union, Literal
+from typing import Optional, Dict, Any, Union
 from abc import ABC, abstractmethod
 from openai import OpenAI
 from anthropic import Anthropic
@@ -39,10 +39,10 @@ class AudioConfig:
 @dataclass
 class VADConfig:
     """Configuration for Voice Activity Detection"""
-    mode: int = 1  # 0-3, higher means more aggressive filtering (lowered from 3 to be more sensitive)
-    silence_threshold: int = 15  # Number of silent chunks before processing (increased to allow longer pauses)
+    mode: int = 1  # 0-3, higher means more aggressive filtering
+    silence_threshold: int = 15  # Number of silent chunks before processing
     energy_threshold: int = 800  # RMS energy threshold for silence detection
-    min_audio_length: int = int(AudioConfig.sample_rate * 0.2 / AudioConfig.chunk_size)  # Minimum 0.2 seconds of audio
+    min_audio_length: int = int(AudioConfig.sample_rate * 0.2 / AudioConfig.chunk_size)  # Min 0.2 seconds of audio
 
 @dataclass
 class TranscriberConfig:
@@ -66,15 +66,14 @@ class SanitizerConfig:
     anthropic_model: str = "claude-3-haiku-20240307"
     streaming: bool = True  # Whether to use streaming for sanitization
     system_prompt: str = ("You act as a transcriber that fixes transcription errors."
-                          "Keep the text concise and faithful to the original meaning," 
-                          "but fix any obvious word errors. "
-                          "<example> <input> you what is you going you on </input> "
-                          "  <output> what is going on </output> </example>"
-                          "<example> <input> .... </input> "
-                          "  <output>  </output> </example>"
-                          "<example> <input> uhm yes a i think uh so </input> "
-                          "  <output> yes i think so </output> </example>"
-                          )
+                         "Keep the text concise and faithful to the original meaning," 
+                         "but fix any obvious word errors. "
+                         "<example> <input> you what is you going you on </input> "
+                         "  <o> what is going on </o> </example>"
+                         "<example> <input> .... </input> "
+                         "  <o>  </o> </example>"
+                         "<example> <input> uhm yes a i think uh so </input> "
+                         "  <o> yes i think so </o> </example>")
 
 def debug_print(message):
     """Print only if debug mode is enabled"""
@@ -89,11 +88,9 @@ def is_silent(audio_data, threshold=VADConfig.energy_threshold):
         # Calculate RMS energy
         energy = np.sqrt(np.mean(np.square(audio_array.astype(np.float32))))
         
-        # Apply a more generous threshold for silence detection
-        # This helps prevent random ambient noise from being detected as speech
+        # Check if below threshold
         is_silent = energy < threshold
         
-        # Add some debugging info when in DEBUG mode
         if DEBUG and not is_silent:
             print(f"Energy level: {energy:.2f}, Threshold: {threshold}")
             
@@ -131,10 +128,8 @@ class OpenAITranscriber(Transcriber):
                     )
                 )
                 
-                # When response_format="text" is used, response is a string, not an object
                 if isinstance(response, str):
                     return response.strip()
-                # For backwards compatibility with JSON response format
                 elif hasattr(response, 'text'):
                     return response.text.strip()
                 else:
@@ -152,7 +147,6 @@ class DeepgramTranscriber(Transcriber):
         if not DEEPGRAM_AVAILABLE:
             raise ImportError("Deepgram SDK is not installed. Install with 'pip install deepgram-sdk'")
         
-        # Check for API key in environment variables    
         api_key = os.environ.get("DEEPGRAM_API_KEY")
         if not api_key:
             raise ValueError("DEEPGRAM_API_KEY environment variable must be set for Deepgram transcription")
@@ -177,11 +171,10 @@ class DeepgramTranscriber(Transcriber):
             debug_print(f"Starting Deepgram transcription for file: {file_path}")
             
             # Set up the Deepgram configuration
-            options = {}
-            
-            # Add core options
-            options["model"] = self.model
-            options["smart_format"] = self.smart_format
+            options = {
+                "model": self.model,
+                "smart_format": self.smart_format
+            }
             
             # Add language if specified
             if self.language:
@@ -193,16 +186,12 @@ class DeepgramTranscriber(Transcriber):
                 
             debug_print(f"Using Deepgram options: {options}")
             
-            # Using with file directly approach
-            debug_print(f"Using file path: {file_path}")
-            
             # Convert execution to a non-blocking call
             def sync_transcribe():
                 try:
                     with open(file_path, 'rb') as audio:
-                        # Using the synchronous method inside an async wrapper
                         source = FileSource(audio)
-                        # Create options object explicitly instead of unpacking
+                        # Create options object
                         config = PrerecordedOptions(
                             model=self.model,
                             smart_format=self.smart_format
@@ -431,16 +420,14 @@ class StreamManager:
             is_speech = False
             try:
                 is_speech = self.vad.is_speech(audio_bytes, AudioConfig.sample_rate)
-                # debug_print(f"VAD detected speech: {is_speech}")
             except Exception as e:
-                # debug_print(f"VAD error: {e}")
                 is_speech = False  # Default to false on error
             
-            # Also check energy level
+            # Check energy level
             is_not_silent = not is_silent(audio_bytes)
             debug_print(f"Energy check - not silent: {is_not_silent}")
             
-            # Start recording when we detect speech - MORE LENIENT: either VAD or energy 
+            # Start recording when we detect speech (either VAD or energy)
             if is_speech or is_not_silent:
                 self.active_speech_detected = True
                 self.audio_buffer.append(audio_bytes)
@@ -467,7 +454,7 @@ class StreamManager:
             buffer_size = len(self.audio_buffer)
             if buffer_size >= VADConfig.min_audio_length and (
                 self.silence_frames >= VADConfig.silence_threshold or 
-                buffer_size >= int(AudioConfig.sample_rate * 10 / AudioConfig.chunk_size)  # Max 10 seconds (increased from 2)
+                buffer_size >= int(AudioConfig.sample_rate * 10 / AudioConfig.chunk_size)  # Max 10 seconds
             ):
                 # Combine chunks and send for transcription
                 audio_data = b''.join(self.audio_buffer)
@@ -499,13 +486,11 @@ class StreamManager:
             wf.writeframes(audio_data)
     
     async def _transcribe_chunk(self, file_path):
-        """Transcribe an audio chunk using the configured transcriber and sanitize the result."""
+        """Transcribe an audio chunk using the configured transcriber."""
         try:
-            # Use the configured transcription service
             transcript_text = await self.transcriber.transcribe(file_path)
                 
             if transcript_text:
-                # Send the raw transcript through the sanitizer
                 debug_print(f"Raw transcription: {transcript_text}")
                 sanitized_text = await self.sanitizer.sanitize(transcript_text)
                 
@@ -594,6 +579,7 @@ class MicrophoneHandler:
                 await self.audio_task
             except asyncio.CancelledError:
                 pass
+
 async def main(debug=False, transcriber_config=None, sanitizer_config=None):
     """Main function to run the application."""
     global DEBUG
@@ -605,7 +591,7 @@ async def main(debug=False, transcriber_config=None, sanitizer_config=None):
     if sanitizer_config is None:
         sanitizer_config = SanitizerConfig()
     
-    # Create and start stream manager with transcriber and sanitizer configs
+    # Create and start stream manager
     stream_manager = StreamManager(transcriber_config, sanitizer_config)
     await stream_manager.start()
     

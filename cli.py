@@ -5,63 +5,37 @@ import sys
 import asyncio
 import logging
 import argparse
-from typing import Dict, List, Optional, Any, Union
 import readline
 from pathlib import Path
-from dataclasses import dataclass
+from typing import Dict, List, Optional, Any, Union
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress
-from rich.syntax import Syntax
 from rich.prompt import Prompt
-from rich import print as rprint
 from rich.theme import Theme
 from rich.table import Table
 
 from pydantic_ai import Agent, Tool
-from agent import (
-    configure_logging
-)
+from agent import (configure_logging)
 from agent_manager import AgentManager
 from dotenv import load_dotenv
 from transcriber import (
-    AudioConfig, VADConfig, TranscriberConfig,
+    AudioConfig, TranscriberConfig,
     SanitizerConfig, StreamManager, MicrophoneHandler
 )
 
 from pydantic_ai.models.openai import OpenAIModel
 
-
+# Command line arguments
 parser = argparse.ArgumentParser()
 parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose logging')
 parser.add_argument('--transcriber', choices=['openai', 'deepgram'], default='openai', help='Transcription provider')
 args = parser.parse_args()
 
-stdin_lock = asyncio.Lock()
-
-async def async_input(prompt: str = "") -> str:
-    """Thread-safe async input function with lock protection and enhanced reliability"""
-    # Use the lock to ensure only one input operation at a time
-    async with stdin_lock:
-        try:
-            # Print the prompt ourselves to ensure it's visible
-            if prompt:
-                print(prompt, end="", flush=True)
-                
-            # Run blocking input in a thread pool to avoid blocking the event loop
-            # Use "" as prompt since we've already displayed it
-            result = await asyncio.get_event_loop().run_in_executor(None, lambda: input(""))
-            return result
-        except EOFError:
-            # Handle EOF (Ctrl+D) gracefully
-            return ""
-        except Exception as e:
-            logging.error(f"Input error: {e}")
-            return ""
-
+# Configure logging
 configure_logging(args.verbose)
 
+# Configure console theme
 custom_theme = Theme({
     "info": "grey70",
     "warning": "yellow",
@@ -72,6 +46,21 @@ custom_theme = Theme({
 })
 
 console = Console(theme=custom_theme)
+stdin_lock = asyncio.Lock()
+
+async def async_input(prompt: str = "") -> str:
+    """Thread-safe async input function with lock protection and enhanced reliability"""
+    async with stdin_lock:
+        try:
+            if prompt:
+                print(prompt, end="", flush=True)
+            result = await asyncio.get_event_loop().run_in_executor(None, lambda: input(""))
+            return result
+        except EOFError:
+            return ""
+        except Exception as e:
+            logging.error(f"Input error: {e}")
+            return ""
 
 class VoiceInputManager:
     """Manages voice input with async streaming capabilities"""
@@ -130,7 +119,6 @@ class VoiceInputManager:
                 self.mic_handler = MicrophoneHandler(self.stream_manager)
         
         import pyaudio
-        from transcriber import AudioConfig
         
         # Override the _transcribe_chunk method to capture output
         original_transcribe = self.stream_manager._transcribe_chunk
@@ -140,7 +128,6 @@ class VoiceInputManager:
             try:
                 transcript_text = await self.stream_manager.transcriber.transcribe(file_path)
                 if transcript_text and transcript_text.strip():
-                    # Sanitize the text if possible
                     try:
                         sanitized_text = await self.stream_manager.sanitizer.sanitize(transcript_text)
                         if sanitized_text and sanitized_text.strip():
@@ -148,7 +135,6 @@ class VoiceInputManager:
                         else:
                             await self.voice_input_queue.put(transcript_text)
                     except:
-                        # Fallback to raw transcript if sanitization fails
                         await self.voice_input_queue.put(transcript_text)
             except Exception as e:
                 logging.error(f"Error during transcription capture: {e}")
@@ -176,17 +162,13 @@ class VoiceInputManager:
             
             try:
                 while self.mic_handler.is_streaming:
-                    # Read audio data from microphone
                     audio_data = stream.read(AudioConfig.chunk_size, exception_on_overflow=False)
-                    # Send to stream manager
                     await self.stream_manager.add_audio_chunk(audio_data)
-                    # Small delay to prevent overwhelming the stream
                     await asyncio.sleep(0.01)
                     
             except Exception as e:
                 logging.error(f"Error in audio streaming: {e}")
             finally:
-                # Cleanup
                 stream.stop_stream()
                 stream.close()
                 p.terminate()
@@ -201,20 +183,15 @@ class VoiceInputManager:
             
         self.is_active = False
         
-        # Stop microphone handler
         if self.mic_handler:
             await self.mic_handler.stop_streaming()
         
-        # Cancel voice task first
         if self.voice_task:
             self.voice_task.cancel()
             try:
                 await self.voice_task
             except asyncio.CancelledError:
                 pass
-                
-        # Don't close the stream manager, just stop listening
-        # We'll reinitialize it if needed later
             
     async def get_next_voice_input(self, timeout: float = 0.1) -> Optional[str]:
         """Get the next voice input if available, with timeout"""
@@ -233,21 +210,14 @@ class CLI:
         self.voice_mode = False
         self.voice_manager = None
         self.dual_input_mode = False
-        
-        # Create a unified input queue - 
-        # all inputs (text and voice) will flow through this
         self.input_queue = asyncio.Queue()
-        # Task for voice input processing
         self.voice_input_task = None
         
     async def initialize(self):
         """Initialize CLI components"""
         self.setup_history()
-        
-        # Initialize voice manager
         self.voice_manager = VoiceInputManager(self.console)
         await self.voice_manager.initialize()
-        
         return self
         
     def setup_history(self):
@@ -287,36 +257,6 @@ class CLI:
         self.console.print(help_table)
         
     async def toggle_dual_mode(self):
-        """Toggle dual input mode (voice + text simultaneous)"""
-        was_enabled = self.dual_input_mode
-        self.dual_input_mode = not self.dual_input_mode
-        
-        if self.dual_input_mode:
-            # Redirect stdout temporarily to suppress messages
-            import sys
-            original_stdout = sys.stdout
-            sys.stdout = open(os.devnull, 'w')
-            
-            try:
-                # Start voice listening in background
-                await self.voice_manager.start_listening()
-            finally:
-                # Restore stdout
-                sys.stdout.close()
-                sys.stdout = original_stdout
-                
-            self.console.print("[success]Dual input mode enabled - listening silently via microphone[/success]")
-        else:
-            # Just set the flag - the actual cleanup will happen in the main loop with a full reset
-            # This is the key difference - we don't try to clean up here, but let the main loop handle it
-            self.console.print("[success]Dual input mode disabled[/success]")
-            
-            # IMPORTANT: We do NOT stop the voice manager here!
-            # The reset logic in the main loop will handle that completely
-            # This prevents the double-cleanup issue that was causes to exit
-            # on exiting dual mode
-            
-    async def toggle_dual_mode(self):
         """Toggle dual input mode (voice + text simultaneous) using the input queue approach"""
         self.dual_input_mode = not self.dual_input_mode
         
@@ -332,7 +272,6 @@ class CLI:
                     is_dual_mode_active = True
                     
                     while is_dual_mode_active:
-                        # Check if dual mode is still active - exit loop if not
                         if not self.dual_input_mode:
                             logging.debug("Voice processor detected dual mode disabled")
                             break
@@ -345,16 +284,11 @@ class CLI:
                                 break
                             
                             if voice_text and voice_text.strip():
-                                # We'll print the voice text in the main loop when processing the queue
-                                # Add to history for tab completion
                                 if voice_text.strip():
                                     readline.add_history(voice_text)
                                     
-                                # Add to the input queue for processing - use put_nowait to avoid blocking
                                 try:
-                                    # Clean up the voice text before adding to queue
                                     clean_voice_text = voice_text.strip()
-                                    # Only add to queue if we're still in dual mode
                                     if self.dual_input_mode:
                                         self.input_queue.put_nowait(clean_voice_text)
                                         logging.debug(f"Added voice input to queue: {clean_voice_text}")
@@ -363,20 +297,17 @@ class CLI:
                                 except Exception as e:
                                     logging.error(f"Error adding voice to queue: {e}")
                         except asyncio.TimeoutError:
-                            # Normal timeout, just update our active flag and continue
                             is_dual_mode_active = self.dual_input_mode
                         except Exception as e:
-                            if self.dual_input_mode:  # Only log if still in dual mode
+                            if self.dual_input_mode:
                                 logging.error(f"Voice input error: {e}")
                             await asyncio.sleep(0.1)
                             
-                        # Check dual mode state again
                         is_dual_mode_active = self.dual_input_mode
                         
                 except Exception as e:
                     logging.error(f"Voice processor error: {e}")
                 finally:
-                    # Always stop voice when exiting
                     try:
                         await self.voice_manager.stop_listening()
                         logging.debug("Voice processor stopped listening")
@@ -390,7 +321,6 @@ class CLI:
             await asyncio.sleep(0.2)
             
         else:
-            # Disable dual mode flag first
             self.dual_input_mode = False
             self.console.print("[success]Dual input mode disabled[/success]")
             
@@ -401,12 +331,10 @@ class CLI:
             if self.voice_input_task and not self.voice_input_task.done():
                 self.voice_input_task.cancel()
                 try:
-                    # Use timeout to avoid waiting indefinitely
                     await asyncio.wait_for(asyncio.shield(self.voice_input_task), timeout=0.5)
                 except (asyncio.CancelledError, asyncio.TimeoutError):
-                    pass  # Expected cancellation or timeout
+                    pass
                     
-                # Set task to None to ensure clean state
                 self.voice_input_task = None
             
             # Stop voice listening and drain the queue
@@ -433,14 +361,13 @@ class CLI:
             try:
                 await asyncio.wait_for(self.voice_input_task, timeout=0.5)
             except (asyncio.TimeoutError, asyncio.CancelledError):
-                pass  # Expected when cancelled
+                pass
                 
         # Clean up voice manager resources
         if self.voice_manager:
             try:
                 await self.voice_manager.stop_listening()
                 
-                # Fully clean up the stream manager if it exists
                 if self.voice_manager.stream_manager and self.voice_manager.stream_manager.is_active:
                     await self.voice_manager.stream_manager.close()
             except Exception as e:
@@ -478,7 +405,6 @@ async def run_cli():
                 except (PermissionError, OSError):
                     pass
                 
-                
                 # Initialize user_input
                 user_input = None
                 
@@ -488,28 +414,17 @@ async def run_cli():
                 # Set prompt - using ANSI color codes for visibility
                 prompt = "\033[1;32m > \033[0m"
                 
-                # Print prompt explicitly (our async_input function will handle it properly)
+                # Print prompt explicitly
                 print(prompt, end="", flush=True)
                 
-                # Two ways to get input:
-                # 1. Directly from the keyboard (for all modes)
-                # 2. From the input queue (for voice input in dual mode)
-                
-                # Create a task to get keyboard input (no prompt needed since we printed it already)
+                # Create a task to get keyboard input
                 keyboard_task = asyncio.create_task(async_input(""))
                 
                 # Create a task to get from input queue (only used in dual mode)
                 queue_task = None
                 if cli.dual_input_mode:
-                    # Check if anything is in the queue first (non-blocking)
-                    try:
-                        if not cli.input_queue.empty():
-                            queue_task = asyncio.create_task(cli.input_queue.get_nowait())
-                        else:
-                            queue_task = asyncio.create_task(cli.input_queue.get())
-                    except asyncio.QueueEmpty:
-                        # Queue was empty when we checked, create a normal wait task
-                        queue_task = asyncio.create_task(cli.input_queue.get())
+                    # Always create a queue task that waits for voice input
+                    queue_task = asyncio.create_task(cli.input_queue.get())
                         
                 # Prepare wait tasks - always include keyboard input
                 wait_tasks = [keyboard_task]
@@ -535,33 +450,46 @@ async def run_cli():
                 user_input = None
                 input_from_voice = False
                 
+                # Get the latest input from the completed tasks
+                # We'll prioritize keyboard input over voice input
+                keyboard_input = None
+                voice_input = None
+                
                 for task in done:
                     try:
                         result = task.result()
-                        if result and isinstance(result, str):  # Skip empty inputs, ensure it's a string
-                            user_input = result
-                            
-                            # Check if this was voice input
+                        if result and isinstance(result, str):
+                            # Determine the input type
                             if queue_task and task == queue_task:
-                                input_from_voice = True
-                                # Print the voice input to make it visible
-                                if not result.startswith("\nVoice:"):  # Avoid double-printing
-                                    print(f"\nVoice: {result}")
-                                    
-                                # For voice input, we need to reset the prompt display
-                                # This is critical to avoid the double prompt issue
-                                print("")  # Add a blank line after voice response
-                            
-                            # Add to history if not empty and not from voice
-                            if user_input.strip() and not input_from_voice:
-                                readline.add_history(user_input)
+                                # This is voice input
+                                voice_input = result
+                                logging.debug(f"Got voice input: '{result}'")
                                 
-                            # Debug info
-                            logging.debug(f"Got input: '{result}' (from_voice={input_from_voice})")
-                            break
+                                # Display the voice input
+                                if not result.startswith("\nVoice:"):
+                                    print(f"\nVoice: {result}")
+                                print("")  # Add a blank line after voice display
+                            else:
+                                # This is keyboard input
+                                keyboard_input = result
+                                logging.debug(f"Got keyboard input: '{result}'")
+                                
+                                # Add to readline history if not empty
+                                if keyboard_input.strip():
+                                    readline.add_history(keyboard_input)
                     except Exception as e:
                         cli.console.print(f"[error]Input task error: {e}[/error]")
                         logging.error(f"Input task error: {e}")
+                
+                # Prioritize keyboard input over voice input
+                if keyboard_input:
+                    user_input = keyboard_input
+                    input_from_voice = False
+                    logging.debug(f"Using keyboard input: '{user_input}'")
+                elif voice_input:
+                    user_input = voice_input
+                    input_from_voice = True
+                    logging.debug(f"Using voice input: '{user_input}'")
                 
                 # If we didn't get input, try again
                 if not user_input:
@@ -590,7 +518,6 @@ async def run_cli():
                 if user_input.lower() in ['/exit', '/quit', '/bye', 'exit', 'quit', 'bye']:
                     cli.console.print("[info]Shutting down...[/info]")
                     # Force exit instead of trying to cleanup gracefully
-                    # This is a drastic measure but guarantees clean exit
                     import os
                     os._exit(0)
                 
@@ -636,8 +563,6 @@ async def run_cli():
                         
                     # Toggle dual mode
                     await cli.toggle_dual_mode()
-                    
-                    # No special handling needed with the new input queue approach
                     continue
                 
                 elif user_input.startswith('/'):
@@ -654,9 +579,8 @@ async def run_cli():
                     # Display result
                     cli.console.print(f"{result}")
                     
-                    # Critical: If the input came from voice, we need to reset the prompt properly
+                    # Reset the prompt properly for voice input
                     if input_from_voice:
-                        # Add a newline to ensure the next prompt is properly positioned
                         print("")
                         
                 except Exception as e:
@@ -664,7 +588,7 @@ async def run_cli():
                     import traceback
                     traceback.print_exc()
                 
-                # Reset input_from_voice flag after processing to avoid lingering effects
+                # Reset input_from_voice flag after processing
                 input_from_voice = False
                 
             except KeyboardInterrupt:
@@ -673,8 +597,6 @@ async def run_cli():
                 cli.console.print(f"[error]Error: {str(e)}[/error]")
                 import traceback
                 traceback.print_exc()
-                
-            # No reset logic needed with the queue-based approach
     
     finally:
         # Clean up CLI resources
@@ -684,8 +606,6 @@ async def run_cli():
         if agent_manager:
             try:
                 cli.console.print("[info]Cleaning up resources...[/info]")
-                # Don't use a spinner here as it can cause issues during shutdown
-                # Instead, just set a reasonable timeout
                 try:
                     await asyncio.wait_for(agent_manager.cleanup(), timeout=3.0)
                     cli.console.print("[success]Resources cleaned up successfully[/success]")
@@ -707,14 +627,11 @@ async def run_cli():
 def main():
     """Main entry point with graceful shutdown handling"""
     try:
-        # Run with properly configured asyncio and signal handling
         asyncio.run(run_cli())
     except KeyboardInterrupt:
-        # Handle Ctrl+C gracefully
         print("\nShutdown requested by keyboard interrupt")
         print("Goodbye!")
     except Exception as e:
-        # Log other exceptions but don't display full traceback to user
         logging.error(f"Unexpected error during execution: {e}")
         print(f"\nError: {e}")
         print("Exiting due to error")
