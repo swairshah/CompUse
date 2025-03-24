@@ -13,6 +13,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.theme import Theme
 from rich.table import Table
+from rich.live import Live
+from rich.spinner import Spinner
 from openai import AsyncOpenAI
 from silero_vad import load_silero_vad
 import aioconsole
@@ -37,7 +39,6 @@ async def logger():
         message = await print_queue.get()
         if message is None:
             break
-        # Special marker to show prompt
         if message == "__SHOW_PROMPT__":
             console.file.write(prompt)
             console.file.flush()
@@ -49,8 +50,13 @@ async def logger():
 
 async def safe_print(message):
     await print_queue.put(message)
-    # Signal that a prompt should be displayed after this message
     await print_queue.put("__SHOW_PROMPT__")
+
+async def run_with_spinner(coroutine):
+    """Run a coroutine with a thinking spinner displayed."""
+    spinner = Spinner("point", text="", style="bold green")
+    with Live(spinner, console=console, refresh_per_second=10, transient=True):
+        return await coroutine
 
 client = AsyncOpenAI(api_key=os.environ['OPENAI_API_KEY'])
 
@@ -99,7 +105,9 @@ async def process_voice_input(agent_manager):
             )
         voice_text = response.text
         await safe_print(f"[highlight] > [/] {voice_text}")
-        result, _ = await agent_manager.run_command(voice_text)
+        
+        result, _ = await run_with_spinner(agent_manager.run_command(voice_text))
+        
         await safe_print(result)
 
 
@@ -107,11 +115,9 @@ async def process_text_input(agent_manager, cli):
     loop = asyncio.get_event_loop()
 
     while True:
-        # Prompt will be handled by the logger
         user_input = await loop.run_in_executor(None, lambda: input(""))
         if user_input.lower() in ['/exit', '/quit', '/bye']:
             await safe_print("[info]Shutting down...[/info]")
-            # Raise CancelledError to trigger clean shutdown instead of using os._exit
             raise asyncio.CancelledError()
         elif user_input.lower() == '/help':
             help_text = cli.get_help_text()
@@ -130,7 +136,8 @@ async def process_text_input(agent_manager, cli):
         elif user_input.startswith('/'):
             await safe_print(f"[error]Unknown command: {user_input}[/error]")
         else:
-            result, _ = await agent_manager.run_command(user_input)
+            result, _ = await run_with_spinner(agent_manager.run_command(user_input))
+            
             await safe_print(result)
 class CLI:
     commands = ["/help", "/tools", "/history", "/clear", "/reset", "/exit", "/quit", "/bye"]
@@ -165,14 +172,14 @@ async def run_cli():
     configure_logging(False)
     agent_manager = await AgentManager.initialize()
 
-    await safe_print(Panel.fit("[highlight]CLI with Audio Initialized![/highlight]"))
-    # Initial prompt will be added by safe_print's __SHOW_PROMPT__ signal
+    await safe_print(Panel.fit("[highlight]CLI with Audio Initialized[/highlight]"))
+
+    await safe_print(agent_manager.get_tools_table())
 
     log_task = asyncio.create_task(logger())
     tasks = []
 
     try:
-        # Create tasks so we can cancel them properly
         audio_task = asyncio.create_task(audio_stream())
         voice_task = asyncio.create_task(process_voice_input(agent_manager))
         text_task = asyncio.create_task(process_text_input(agent_manager, cli))
