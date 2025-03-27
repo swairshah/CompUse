@@ -11,7 +11,6 @@ av==14.2.0
 certifi==2025.1.31
 charset-normalizer==3.4.1
 coloredlogs==15.0.1
-ctranslate2==4.5.0
 daily-python==0.15.0
 dataclasses-json==0.6.7
 deepgram-sdk==3.10.1
@@ -83,4 +82,14 @@ uc-micro-py==1.0.3
 urllib3==2.3.0
 websockets==13.1
 yarl==1.18.3
-
+aioconsole==0.8.1
+silero-vad==5.1.2
+torchaudio==2.2.2
+jinja2==3.1.6
+markupsafe==3.0.2
+networkx==3.4.2
+torch==2.2.2
+wavio==0.0.9
+cffi==1.17.1
+pycparser==2.22
+sounddevice==0.5.1
