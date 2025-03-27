@@ -3,8 +3,9 @@ from __future__ import annotations
 import os
 import asyncio
 import logging
-from dataclasses import dataclass
-from typing import List, Optional, Any
+import argparse
+from dataclasses import dataclass, field
+from typing import List, Optional, Any, Dict
 from rich.table import Table
 
 from pydantic_ai import Agent
@@ -20,12 +21,17 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
+import agent
+
 from agent import (
-    initialize_puppeteer_server, 
-    initialize_git_server, 
-    initialize_filesystem_server, 
-    load_mcp_tools, 
-    CombinedDeps
+    CombinedDeps,
+    ServerConfig,
+    ServerConnection,
+    PUPPETEER_SERVER,
+    GIT_SERVER,
+    get_filesystem_server_config,
+    initialize_server,
+    shutdown_all_servers
 )
 
 from gui_tools import (
@@ -40,6 +46,26 @@ from gui_tools import (
     focus_application
 )
 
+def configure_logging():
+    """Configure logging based on command line arguments."""
+    parser = argparse.ArgumentParser(description="Agent Manager")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    args, _ = parser.parse_known_args()
+    
+    if args.debug:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+    else:
+        logging.basicConfig(level=logging.ERROR)
+        
+    for logger_name in logging.root.manager.loggerDict:
+        logging.getLogger(logger_name).setLevel(logging.DEBUG if args.debug else logging.ERROR)
+
+# Call this function early in the script execution
+configure_logging()
+
 @dataclass
 class AgentManager:
     """Manages the agent, its tools, and conversation history."""
@@ -48,69 +74,54 @@ class AgentManager:
     message_history: List[ModelMessage]
     gui_tools: List[str]
     mcp_tools: List[str]
-    # Store MCP sessions and contexts
-    _puppeteer_session: Optional[Any] = None
-    _puppeteer_ctx: Optional[Any] = None
-    _git_session: Optional[Any] = None
-    _git_ctx: Optional[Any] = None
-    _filesystem_session: Optional[Any] = None
-    _filesystem_ctx: Optional[Any] = None
+    # Store server connections
+    servers: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     async def initialize(cls) -> AgentManager:
         """Initialize the agent manager with all necessary components."""
-        # Initialize Puppeteer server
-        puppeteer_session, puppeteer_ctx = await initialize_puppeteer_server()
+        # Add this line near the beginning of the method to respect parent logging level
+        root_logger = logging.getLogger()
+        log_level = root_logger.level
         
-        # Initialize Git server
-        git_session, git_ctx = await initialize_git_server()
+        # Override any other logging configuration in imported modules
+        for logger_name in logging.root.manager.loggerDict:
+            logging.getLogger(logger_name).setLevel(log_level)
         
-        # Initialize Filesystem server with proper error handling
-        try:
-            filesystem_session, filesystem_ctx = await initialize_filesystem_server()
-            # Load filesystem tools
-            filesystem_tools, filesystem_tool_dict = await load_mcp_tools(filesystem_session)
-        except Exception as e:
-            logging.error(f"Failed to initialize filesystem server: {str(e)}")
-            filesystem_session, filesystem_ctx = None, None
-            filesystem_tools, filesystem_tool_dict = [], {}
+        # Define the servers to initialize
+        server_configs = [
+            PUPPETEER_SERVER,
+            GIT_SERVER,
+            get_filesystem_server_config(),
+            # Add more servers here as needed
+        ]
         
-        # Load tools from Puppeteer server
-        puppeteer_tools, puppeteer_tool_dict = await load_mcp_tools(puppeteer_session)
+        # Initialize all servers and collect their connections
+        servers = {}
+        all_tools = []
+        all_tool_dict = {}
         
-        # Load tools from Git server
-        try:
-            git_tools, git_tool_dict = await load_mcp_tools(git_session)
-        except Exception as e:
-            logging.error(f"Failed to load Git tools: {str(e)}")
-            git_tools, git_tool_dict = [], {}
-        
-        # Combine tool dictionaries - only include non-empty dictionaries
-        all_mcp_tool_dict = {**puppeteer_tool_dict}
-        if git_tool_dict:
-            all_mcp_tool_dict.update(git_tool_dict)
-        if filesystem_tool_dict:
-            all_mcp_tool_dict.update(filesystem_tool_dict)
-        
-        # Combine tools
-        mcp_tools = puppeteer_tools
-        if git_tools:
-            mcp_tools += git_tools
-        if filesystem_tools:
-            mcp_tools += filesystem_tools
+        for config in server_configs:
+            server_conn, error = await initialize_server(config)
+            if server_conn:
+                servers[config.name] = server_conn
+                all_tools.extend(server_conn.tools)
+                all_tool_dict.update(server_conn.tool_dict)
         
         # Create model
         model = OpenAIModel('gpt-4o')
         
-        # Create tools list
+        # Create GUI tools list
         gui_tool_list = [
             screenshot, mouse_move, mouse_click, keyboard_type, key_press,
             get_screen_size, get_mouse_position, switch_window, focus_application
         ]
-        all_tools = [*gui_tool_list, *mcp_tools]
+        
+        # Combine all tools
+        all_tools = [*gui_tool_list, *all_tools]
         
         # Create agent
-        agent = Agent(
+        agent_instance = Agent(
             model,
             deps_type=CombinedDeps,
             retries=1,
@@ -118,64 +129,42 @@ class AgentManager:
         )
         
         # Fix MCP tool schemas
-        for tool_name, tool_info in all_mcp_tool_dict.items():
-            agent._function_tools[tool_name]._parameters_json_schema = tool_info['schema']
-            agent._function_tools[tool_name].description = tool_info['description']
+        for tool_name, tool_info in all_tool_dict.items():
+            agent_instance._function_tools[tool_name]._parameters_json_schema = tool_info['schema']
+            agent_instance._function_tools[tool_name].description = tool_info['description']
         
         # Initialize dependencies with all sessions
         deps = CombinedDeps(
-            mcp_session=puppeteer_session,
-            git_session=git_session,
-            filesystem_session=filesystem_session
+            server_map={name: conn for name, conn in servers.items()}
         )
         
         # Get tool names for display
         gui_tool_names = ["screenshot", "mouse_move", "mouse_click", "keyboard_type", "key_press", 
                        "get_screen_size", "get_mouse_position", "switch_window", "focus_application"]
-        mcp_tool_names = list(all_mcp_tool_dict.keys())
+        mcp_tool_names = list(all_tool_dict.keys())
         
         # Create screenshots directory
         os.makedirs(os.path.join(os.getcwd(), "screenshots"), exist_ok=True)
         
         return cls(
-            agent=agent,
+            agent=agent_instance,
             deps=deps,
             message_history=[],
             gui_tools=gui_tool_names,
             mcp_tools=mcp_tool_names,
-            _puppeteer_session=puppeteer_session,
-            _puppeteer_ctx=puppeteer_ctx,
-            _git_session=git_session,
-            _git_ctx=git_ctx,
-            _filesystem_session=filesystem_session,
-            _filesystem_ctx=filesystem_ctx
+            servers=servers
         )
     
     async def cleanup(self):
         """Clean up all MCP servers and stdio contexts."""
-        # Clean up sessions
-        for name, session in [
-            ("Puppeteer", self._puppeteer_session),
-            ("Git", self._git_session),
-            ("Filesystem", self._filesystem_session)
-        ]:
-            if session:
-                try:
-                    await asyncio.wait_for(session.__aexit__(None, None, None), timeout=5.0)
-                except (asyncio.TimeoutError, Exception) as e:
-                    logging.warning(f"{name} session cleanup warning: {str(e)}")
-        
-        # Clean up stdio contexts
-        for name, ctx in [
-            ("Puppeteer", self._puppeteer_ctx),
-            ("Git", self._git_ctx),
-            ("Filesystem", self._filesystem_ctx)
-        ]:
-            if ctx:
-                try:
-                    await asyncio.wait_for(ctx.__aexit__(None, None, None), timeout=5.0)
-                except (asyncio.TimeoutError, Exception) as e:
-                    logging.warning(f"{name} stdio cleanup warning: {str(e)}")
+        try:
+            if self.servers:
+                logging.debug(f"Starting cleanup of {len(self.servers)} servers...")
+                await agent.shutdown_all_servers(self.servers)
+                self.servers.clear()
+            logging.debug("Cleanup complete")
+        except Exception as e:
+            logging.error(f"Error during cleanup: {str(e)}")
     
     async def run_command(self, command: str) -> tuple[str, float]:
         """Run a command through the agent and return the result and elapsed time."""

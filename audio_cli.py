@@ -19,9 +19,20 @@ from rich.spinner import Spinner
 from openai import AsyncOpenAI
 from silero_vad import load_silero_vad
 import aioconsole
-from agent import configure_logging
 from agent_manager import AgentManager
 from dotenv import load_dotenv
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--debug', action='store_true', help='Enable debug logging')
+args = parser.parse_args()
+
+logging.basicConfig(
+    level=logging.DEBUG if args.debug else logging.ERROR,
+    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
+)
+
+for logger_name in logging.root.manager.loggerDict:
+    logging.getLogger(logger_name).setLevel(logging.DEBUG if args.debug else logging.ERROR)
 
 console = Console(theme=Theme({
     "info": "grey70",
@@ -182,7 +193,7 @@ class CLI:
 async def run_cli():
     load_dotenv()
     cli = CLI()
-    configure_logging(False)
+    
     agent_manager = await AgentManager.initialize()
 
     await safe_print(Panel.fit("[highlight]CLI with Audio Initialized[/highlight]"))
@@ -213,14 +224,27 @@ async def run_cli():
         
         # Clean up with timeout
         try:
+            # Wait briefly for tasks to be cancelled
+            if tasks:
+                await asyncio.wait(tasks, timeout=1.0)
+            
+            # Modify the agent manager cleanup process to be more robust
+            cleanup_task = asyncio.create_task(agent_manager.cleanup())
+            await asyncio.wait_for(cleanup_task, timeout=3.0)
+            
+            # Close the logger last
             await print_queue.put(None)  # Close logger
             await asyncio.wait_for(log_task, timeout=1.0)
-            await asyncio.wait_for(agent_manager.cleanup(), timeout=2.0)
+            
             console.print("[success]Resources cleaned up successfully[/success]")
+            # Force exit to avoid hanging
+            os._exit(0)
         except asyncio.TimeoutError:
             console.print("[warning]Cleanup timed out, forcing exit[/warning]")
+            os._exit(1)
         except Exception as e:
             console.print(f"[error]Error during cleanup: {e}[/error]")
+            os._exit(1)
 
 
 if __name__ == "__main__":

@@ -27,16 +27,18 @@ from dotenv import load_dotenv
 
 from pydantic_ai.models.openai import OpenAIModel
 
-
-# Add this before any other code execution (right after imports)
 parser = argparse.ArgumentParser()
-parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose logging')
+parser.add_argument('--debug', action='store_true', help='Enable debug logging')
 args = parser.parse_args()
 
-# Configure logging for both cli.py and agent.py
-configure_logging(args.verbose)
+logging.basicConfig(
+    level=logging.DEBUG if args.debug else logging.ERROR,
+    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
+)
 
-# Setup Rich console with custom theme
+for logger_name in logging.root.manager.loggerDict:
+    logging.getLogger(logger_name).setLevel(logging.DEBUG if args.debug else logging.ERROR)
+
 custom_theme = Theme({
     "info": "grey70",
     "warning": "yellow",

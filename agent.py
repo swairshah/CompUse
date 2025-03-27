@@ -1,8 +1,8 @@
 import os
 import asyncio
 import logging
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Any, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Any, Tuple, NamedTuple
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -12,26 +12,76 @@ from pydantic_ai.tools import ToolDefinition
 
 from gui_tools import GuiToolDeps
 
-# Configure logging globally
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
-)
-
 def configure_logging(verbose: bool = False):
     """Configure logging level based on verbosity."""
+    level = logging.DEBUG if verbose else logging.ERROR
+
     logging.basicConfig(
-        level=logging.INFO if verbose else logging.WARNING,
-        format='%(asctime)s - %(levelname)s - %(message)s'
+        level=level,
+        format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
     )
 
+    logging.getLogger().setLevel(level)
+    
+    for logger_name in logging.root.manager.loggerDict:
+        logging.getLogger(logger_name).setLevel(level)
+
+@dataclass
+class ServerConfig:
+    """Configuration for an MCP server."""
+    name: str
+    command: str
+    args: List[str]
+    env: Optional[Dict[str, str]] = None
+    setup_delay: float = 0.0
+
+PUPPETEER_SERVER = ServerConfig(
+    name="Puppeteer",
+    command="npx",
+    args=["@modelcontextprotocol/server-puppeteer"],
+    env=os.environ,
+)
+
+GIT_SERVER = ServerConfig(
+    name="Git",
+    command="uvx",
+    args=["mcp-server-git", "--repository", os.getcwd()],
+)
+
+def get_filesystem_server_config():
+    """Get filesystem server configuration with dynamic paths."""
+    current_dir = os.getcwd()
+    claude_dir = os.path.expanduser("~/claude-dir")
+    
+    os.makedirs(claude_dir, exist_ok=True)
+    
+    return ServerConfig(
+        name="Filesystem",
+        command="npx",
+        args=["@modelcontextprotocol/server-filesystem", current_dir, claude_dir],
+        env=os.environ,
+        setup_delay=1.0  # Add a delay to ensure server initialization
+    )
+
+@dataclass
+class ServerConnection:
+    """Represents a connection to an MCP server."""
+    name: str
+    session: ClientSession
+    ctx: Any
+    tools: List[Tool] = field(default_factory=list)
+    tool_dict: Dict = field(default_factory=dict)
 
 @dataclass
 class CombinedDeps(GuiToolDeps):
     """Dependencies for combined agent with GUI and MCP tools."""
-    mcp_session: Optional[ClientSession] = None
-    git_session: Optional[ClientSession] = None
-    filesystem_session: Optional[ClientSession] = None
+    server_map: Dict[str, ServerConnection] = field(default_factory=dict)
+    
+    def __getattr__(self, name):
+        """Access server sessions by name with fallback."""
+        if name.endswith('_session') and name[:-8] in self.server_map:
+            return self.server_map[name[:-8]].session
+        return super().__getattribute__(name)
 
 
 async def create_mcp_tool_executor(session: ClientSession, tool_name: str, timeout: float = 120.0):
@@ -76,89 +126,19 @@ async def create_mcp_tool_preparor(tool_name: str, tool_description: str, tool_s
 
     return prepare
 
-async def initialize_git_server() -> Tuple[ClientSession, Any]:
-    """Initialize the Git MCP server."""
-    try:
-        logging.info("Starting Git MCP server...")
-        server_params = StdioServerParameters(
-            command="uvx",
-            args=["mcp-server-git", "--repository", os.getcwd()]
-        )
-
-        stdio_ctx = stdio_client(server_params)
-        read, write = await stdio_ctx.__aenter__()
-        session = ClientSession(read, write)
-        await session.__aenter__()
-        
-        logging.info("Initializing Git server session...")
-        await session.initialize()
-        logging.info("Git server initialized successfully")
-        
-        # Test the connection with a lightweight call
-        tools_response = await session.list_tools()
-        # Check if the response is valid without using len()
-        if not tools_response:
-            raise RuntimeError("No response from Git server")
-        
-        logging.info("Git server connected successfully")
-        return session, stdio_ctx
+async def initialize_server(config: ServerConfig) -> Tuple[ServerConnection, Exception]:
+    """Initialize an MCP server from its configuration.
     
-    except Exception as e:
-        logging.error(f"Failed to initialize Git server: {str(e)}")
-        raise
-
-async def initialize_filesystem_server() -> Tuple[ClientSession, Any]:
-    """Initialize the Filesystem MCP server."""
+    Returns:
+        A tuple of (server_connection, error). If successful, error will be None.
+        If there's an error, server_connection will be None.
+    """
     try:
-        # The issue might be with the directory paths. Make sure they exist and are accessible
-        current_dir = os.getcwd()
-        claude_dir = os.path.expanduser("~/claude-dir")
-        
-        # Ensure the claude-dir exists
-        os.makedirs(claude_dir, exist_ok=True)
-        
-        logging.info(f"Starting filesystem server with dirs: {current_dir} and {claude_dir}")
-        
-        # Use full paths and add debug logging
+        logging.info(f"Starting {config.name} MCP server...")
         server_params = StdioServerParameters(
-            command="npx",
-            args=["@modelcontextprotocol/server-filesystem", current_dir, claude_dir],
-            env=os.environ,
-        )
-        
-        stdio_ctx = stdio_client(server_params)
-        read, write = await stdio_ctx.__aenter__()
-        session = ClientSession(read, write)
-        await session.__aenter__()
-        
-        # Add a longer delay to ensure the server has time to initialize
-        await asyncio.sleep(2)
-        
-        logging.info("Initializing filesystem server session...")
-        await session.initialize()
-        logging.info("Filesystem server initialized successfully")
-        
-        # Test the connection with a lightweight call
-        tools_response = await session.list_tools()
-        # Check if the response is valid without using len()
-        if not tools_response:
-            raise RuntimeError("No response from filesystem server")
-        
-        logging.info("Filesystem server connected successfully")
-        return session, stdio_ctx
-        
-    except Exception as e:
-        logging.error(f"Failed to initialize filesystem server: {str(e)}")
-        raise
-
-async def initialize_puppeteer_server() -> Tuple[ClientSession, Any]:
-    """Initialize the Puppeteer MCP server."""
-    try:
-        logging.info("Starting Puppeteer MCP server...")
-        server_params = StdioServerParameters(
-            command="npx",
-            args=["@modelcontextprotocol/server-puppeteer"],
-            env=os.environ,
+            command=config.command,
+            args=config.args,
+            env=config.env,
         )
 
         stdio_ctx = stdio_client(server_params)
@@ -166,23 +146,41 @@ async def initialize_puppeteer_server() -> Tuple[ClientSession, Any]:
         session = ClientSession(read, write)
         await session.__aenter__()
         
-        logging.info("Initializing Puppeteer server session...")
+        # Add optional delay for servers that need time to initialize
+        if config.setup_delay > 0:
+            await asyncio.sleep(config.setup_delay)
+        
+        logging.info(f"Initializing {config.name} server session...")
         await session.initialize()
-        logging.info("Puppeteer server initialized successfully")
+        logging.info(f"{config.name} server initialized successfully")
         
         # Test the connection with a lightweight call
         tools_response = await session.list_tools()
-        # Check if the response is valid without using len()
         if not tools_response:
-            raise RuntimeError("No response from Puppeteer server")
+            raise RuntimeError(f"No response from {config.name} server")
         
-        logging.info("Puppeteer server connected successfully")
-        return session, stdio_ctx
-    
+        logging.info(f"{config.name} server connected successfully")
+        
+        # Create the server connection object
+        server_conn = ServerConnection(
+            name=config.name,
+            session=session,
+            ctx=stdio_ctx,
+        )
+        
+        # Load the tools
+        try:
+            tools, tool_dict = await load_mcp_tools(session)
+            server_conn.tools = tools
+            server_conn.tool_dict = tool_dict
+        except Exception as e:
+            logging.error(f"Failed to load tools from {config.name} server: {str(e)}")
+        
+        return server_conn, None
+        
     except Exception as e:
-        logging.error(f"Failed to initialize Puppeteer server: {str(e)}")
-        raise
-
+        logging.error(f"Failed to initialize {config.name} server: {str(e)}")
+        return None, e
 
 async def load_mcp_tools(session: ClientSession) -> Tuple[List[Tool], Dict]:
     """Load tools from the MCP server."""
@@ -224,3 +222,68 @@ async def load_mcp_tools(session: ClientSession) -> Tuple[List[Tool], Dict]:
     except Exception as e:
         logging.error(f"Failed to load MCP tools: {str(e)}")
         return [], {}
+
+async def graceful_shutdown(server_conn: ServerConnection) -> None:
+    """Gracefully shut down a server connection.
+    
+    This function handles the proper sequence of cleanup operations to avoid issues with the event loop.
+    """
+    name = server_conn.name
+    
+    if not server_conn.session:
+        logging.warning(f"No active session for {name} server")
+        return
+        
+    try:
+        logging.info(f"Shutting down {name} server...")
+        
+        # First close the session
+        if server_conn.session:
+            try:
+                logging.info(f"Closing {name} session...")
+                await asyncio.wait_for(server_conn.session.__aexit__(None, None, None), timeout=3.0)
+                logging.info(f"{name} session closed")
+            except Exception as e:
+                logging.warning(f"Error closing {name} session: {str(e)}")
+        
+        # Then close the context
+        if server_conn.ctx:
+            try:
+                logging.info(f"Closing {name} context...")
+                await asyncio.wait_for(server_conn.ctx.__aexit__(None, None, None), timeout=3.0)
+                logging.info(f"{name} context closed")
+            except Exception as e:
+                logging.warning(f"Error closing {name} context: {str(e)}")
+                
+        logging.info(f"{name} server shutdown complete")
+    except Exception as e:
+        logging.error(f"Error during {name} server shutdown: {str(e)}")
+
+async def shutdown_all_servers(servers: Dict[str, ServerConnection]) -> None:
+    """Shut down all server connections gracefully.
+    
+    Args:
+        servers: Dictionary mapping server names to ServerConnection objects
+    """
+    if not servers:
+        logging.info("No servers to shut down")
+        return
+        
+    logging.info(f"Shutting down {len(servers)} servers...")
+    
+    # Create shutdown tasks
+    shutdown_tasks = [
+        graceful_shutdown(server) 
+        for server in servers.values()
+    ]
+    
+    # Execute all shutdown tasks
+    if shutdown_tasks:
+        results = await asyncio.gather(*shutdown_tasks, return_exceptions=True)
+        
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                server_name = list(servers.keys())[i]
+                logging.error(f"Error shutting down {server_name}: {str(result)}")
+    
+    logging.info("All servers shut down")
