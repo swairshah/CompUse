@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.spinner import Spinner
 from rich.live import Live
+import io
+import wave
 
 load_dotenv()
 
@@ -16,6 +18,27 @@ DURATION = 5  # seconds per recording
 
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 console = Console()
+
+async def transcribe_audio_buffer(audio_np):
+    # Create in-memory buffer
+    audio_buffer = io.BytesIO()
+    
+    # Write WAV data to memory buffer
+    with wave.open(audio_buffer, 'wb') as wf:
+        wf.setnchannels(CHANNELS)
+        wf.setsampwidth(2)  # 16-bit audio
+        wf.setframerate(SAMPLE_RATE)
+        wf.writeframes((audio_np * 32767).astype(np.int16).tobytes())
+    
+    # Reset buffer position
+    audio_buffer.seek(0)
+    
+    response = await client.audio.transcriptions.create(
+        model="whisper-1",
+        file=("audio.wav", audio_buffer),  # Passing as tuple with filename
+        language="en"
+    )
+    return response.text
 
 async def transcribe_audio(audio_np):
     # Save the audio to a temporary file
@@ -63,7 +86,7 @@ async def record_and_transcribe():
             
             # Transcribing
             with Live(Spinner("point", style="bold green"), console=console, refresh_per_second=10, transient=True) as live:
-                transcription = await transcribe_audio(audio_np)
+                transcription = await transcribe_audio_buffer(audio_np)
             
             console.print(f"{transcription}")
 
