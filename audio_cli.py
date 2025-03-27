@@ -6,7 +6,8 @@ import logging
 import argparse
 import readline
 import sounddevice as sd
-import wavio
+import io
+import wave
 import numpy as np
 import torch
 from rich.console import Console
@@ -92,18 +93,30 @@ async def audio_stream():
         if is_too_quiet(audio_np):
             continue
         if is_voice_present(audio_np):
-            temp_file = "temp_audio.wav"
-            await loop.run_in_executor(None, lambda: wavio.write(temp_file, audio, SAMPLE_RATE, sampwidth=2))
-            await audio_queue.put(temp_file)
+            await audio_queue.put(audio_np)  # Put numpy array directly in queue instead of file path
+
+async def transcribe_audio_buffer(audio_np):
+    audio_buffer = io.BytesIO()
+    
+    with wave.open(audio_buffer, 'wb') as wf:
+        wf.setnchannels(CHANNELS)
+        wf.setsampwidth(2)  # 16-bit audio
+        wf.setframerate(SAMPLE_RATE)
+        wf.writeframes((audio_np * 32767).astype(np.int16).tobytes())
+    
+    audio_buffer.seek(0)
+    
+    response = await client.audio.transcriptions.create(
+        model="whisper-1",
+        file=("audio.wav", audio_buffer),  # Passing as tuple with filename
+        language="en"
+    )
+    return response.text
 
 async def process_voice_input(agent_manager):
     while True:
-        audio_file = await audio_queue.get()
-        with open(audio_file, "rb") as audio:
-            response = await client.audio.transcriptions.create(
-                model="whisper-1", language="en", file=audio
-            )
-        voice_text = response.text
+        audio_np = await audio_queue.get()
+        voice_text = await transcribe_audio_buffer(audio_np)
         await safe_print(f"[highlight] > [/] {voice_text}")
         
         result, _ = await run_with_spinner(agent_manager.run_command(voice_text))
